@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Catch the Fruits 🍎🍌🍊 — Catch the Fruits</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg1: #e8f7ff;
+    --bg2: #fff7f2;
+    --panel: rgba(255,255,255,0.9);
+    --accent: #ff6b6b;
+    --muted: #6b7280;
+  }
+  html,body{ height:100%; margin:0; font-family: "Poppins", system-ui, -apple-system, "Segoe UI", Roboto, Arial; background: linear-gradient(180deg,var(--bg1),var(--bg2)); }
+  .wrap{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; box-sizing:border-box; }
+
+  .game {
+    width:100%;
+    max-width:460px;
+    aspect-ratio: 9/16;
+    background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,255,255,0.85));
+    border-radius:18px;
+    box-shadow: 0 18px 40px rgba(20,40,80,0.12);
+    position:relative;
+    overflow:hidden;
+    border: 1px solid rgba(0,0,0,0.04);
+  }
+
+  canvas { display:block; width:100%; height:100%; touch-action:none; }
+
+  /* HUD */
+  .hud {
+    position:absolute; left:14px; top:14px; z-index:20; display:flex; gap:10px; align-items:center;
+  }
+  .pill {
+    background:var(--panel);
+    padding:8px 12px; border-radius:999px;
+    box-shadow: 0 6px 16px rgba(16,24,40,0.06);
+    font-weight:600; font-size:14px; color:#0b1020; display:flex; gap:8px; align-items:center;
+  }
+  .pill.small{ padding:6px 10px; font-weight:600; color:var(--muted); }
+
+  .top-right {
+    position:absolute; right:14px; top:14px; z-index:20; display:flex; gap:8px; align-items:center;
+  }
+
+  /* Game over overlay */
+  .overlay {
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center; z-index:30; pointer-events:none;
+  }
+  .dialog {
+    pointer-events:auto;
+    width:85%; max-width:360px; background: linear-gradient(180deg,#ffffff,#fff9f6);
+    border-radius:14px; padding:20px; text-align:center; box-shadow: 0 20px 50px rgba(10,18,30,0.12);
+  }
+  .dialog h2{ margin:0 0 8px; font-size:22px; color:#222; }
+  .dialog p{ margin:0 0 16px; color:var(--muted); }
+  .btn {
+    display:inline-block; background:var(--accent); color:white; border:none; padding:10px 16px; border-radius:10px; font-weight:800; cursor:pointer;
+  }
+
+  /* Mobile control hints */
+  .hint {
+    position:absolute; bottom:12px; left:12px; z-index:20; background:var(--panel); padding:8px 10px; border-radius:10px; font-size:13px; color:var(--muted);
+  }
+
+  /* invisible touch halves for quick tap movement */
+  .touch-zones { position:absolute; inset:0; z-index:15; display:none; }
+  .touch-zones .zone { position:absolute; top:0; bottom:0; width:50%; opacity:0; }
+  .touch-zones .left{ left:0; } .touch-zones .right{ right:0; }
+
+  @media (max-width:520px){
+    .touch-zones{ display:block; }
+    .hint{ display:none; }
+  }
+
+  /* subtle decorative footer */
+  .footer-note { position:absolute; left:14px; bottom:12px; font-size:12px; color:var(--muted); z-index:20; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="game" id="gameRoot" role="application" aria-label="Catch the Fruits game">
+    <canvas id="gameCanvas"></canvas>
+
+    <div class="hud" aria-hidden="false">
+      <div class="pill">🍎 Score: <span id="score">0</span></div>
+      <div class="pill small">💥 Misses: <span id="misses">0</span> / <span id="maxMisses">5</span></div>
+    </div>
+
+    <div class="top-right">
+      <div class="pill small">🏆 Best: <span id="best">0</span></div>
+    </div>
+
+    <div class="touch-zones" id="touchZones" aria-hidden="true">
+      <div class="zone left" data-side="left"></div>
+      <div class="zone right" data-side="right"></div>
+    </div>
+
+    <div class="hint">Use ← &rarr; or drag / tap</div>
+    <div class="footer-note">Catch fruits — miss 5 and it's game over. Tap Restart to play again.</div>
+
+    <div class="overlay" id="overlay" style="display:none;">
+      <div class="dialog" role="dialog" aria-modal="true">
+        <h2 id="goTitle">Game Over 😵</h2>
+        <p id="goSummary">You scored 0 points.</p>
+        <button class="btn" id="restartBtn">Restart</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+/* -------------------------
+   Catch the Fruits
+   Single-file game (HTML+CSS+JS)
+   ------------------------- */
+(() => {
+  // Elements
+  const canvas = document.getElementById('gameCanvas');
+  const root = document.getElementById('gameRoot');
+  const scoreEl = document.getElementById('score');
+  const missesEl = document.getElementById('misses');
+  const bestEl = document.getElementById('best');
+  const overlay = document.getElementById('overlay');
+  const goSummary = document.getElementById('goSummary');
+  const restartBtn = document.getElementById('restartBtn');
+  const touchZones = document.getElementById('touchZones');
+
+  const ctx = canvas.getContext('2d', { alpha:true });
+
+  // SETTINGS
+  const MAX_MISSES = 5;
+  const FRUITS = ['🍎','🍌','🍊','🍇','🍓','🍍','🥝','🍑'];
+  const FRUIT_SIZE_MIN = 26;
+  const FRUIT_SIZE_MAX = 48;
+  const FRUIT_SPEED_MIN = 80;  // px/sec
+  const FRUIT_SPEED_MAX = 280;
+  const SPAWN_MIN = 520; // ms
+  const SPAWN_MAX = 1100;
+  const DIFFICULTY_INCREASE_RATE = 0.996; // spawn interval multiplier every frame ~ slowly increases difficulty
+  const BASKET_WIDTH_FRAC = 0.18;
+  const BASKET_HEIGHT_PX = 34;
+  const BASKET_Y_OFFSET = 28;
+
+  // state
+  let dpr = Math.max(1, window.devicePixelRatio || 1);
+  let fruits = [];
+  let particles = [];
+  let score = 0;
+  let misses = 0;
+  let running = false;
+  let lastTime = 0;
+  let spawnTimer = 0;
+  let nextSpawn = randRange(SPAWN_MIN, SPAWN_MAX);
+  let basket = { xFrac: 0.5, widthFrac: BASKET_WIDTH_FRAC };
+  let keys = { left:false, right:false };
+  let best = parseInt(localStorage.getItem('catch_fruits_best') || '0', 10);
+
+  // init UI
+  bestEl.textContent = best;
+  document.getElementById('maxMisses').textContent = MAX_MISSES;
+
+  // Resize handling (pixel-perfect for DPR)
+  function resizeCanvas(){
+    const rect = canvas.getBoundingClientRect();
+    dpr = Math.max(1, window.devicePixelRatio || 1);
+    const w = Math.max(1, Math.floor(rect.width * dpr));
+    const h = Math.max(1, Math.floor(rect.height * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+      canvas.style.width = rect.width + 'px';
+      canvas.style.height = rect.height + 'px';
+      // Set transform so we can work in CSS pixels
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+  }
+
+  // util
+  function randRange(a,b){ return Math.random()*(b-a)+a; }
+  function choose(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  // spawn fruit
+  function spawnFruit() {
+    const size = randRange(FRUIT_SIZE_MIN, FRUIT_SIZE_MAX);
+    const xFrac = Math.random(); // fraction (0..1)
+    // Start slightly above screen
+    fruits.push({
+      xFrac,
+      y: -size - 8,
+      emoji: choose(FRUITS),
+      size,
+      vy: randRange(FRUIT_SPEED_MIN, FRUIT_SPEED_MAX),
+      rot: randRange(-0.6,0.6),
+      rotSpeed: randRange(-1.2,1.2)
+    });
+  }
+
+  // particles for catch effect
+  function spawnParticles(x, y, color, amount=14) {
+    for(let i=0;i<amount;i++){
+      const angle = Math.random()*Math.PI*2;
+      const speed = randRange(80,260);
+      particles.push({
+        x, y,
+        vx: Math.cos(angle)*speed,
+        vy: Math.sin(angle)*speed - randRange(40,160),
+        r: randRange(2,6),
+        life: randRange(0.4,0.9),
+        maxLife: 1,
+        color
+      });
+    }
+  }
+
+  // input: keyboard
+  window.addEventListener('keydown', (e) => {
+    if(e.key === 'ArrowLeft' || e.key === 'Left') { keys.left = true; e.preventDefault(); }
+    if(e.key === 'ArrowRight' || e.key === 'Right') { keys.right = true; e.preventDefault(); }
+  });
+  window.addEventListener('keyup', (e) => {
+    if(e.key === 'ArrowLeft' || e.key === 'Left') { keys.left = false; }
+    if(e.key === 'ArrowRight' || e.key === 'Right') { keys.right = false; }
+  });
+
+  // pointer/touch: drag basket by pointer or touch
+  let isDragging = false;
+  function clientXToFrac(clientX){
+    const rect = canvas.getBoundingClientRect();
+    const local = clientX - rect.left;
+    return clamp(local / rect.width, 0, 1);
+  }
+
+  canvas.addEventListener('pointerdown', (e) => {
+    isDragging = true;
+    basket.xFrac = clientXToFrac(e.clientX);
+  });
+  window.addEventListener('pointermove', (e) => {
+    if(isDragging) basket.xFrac = clientXToFrac(e.clientX);
+  });
+  window.addEventListener('pointerup', () => { isDragging = false; });
+
+  // touch quick zones (for one-finger taps)
+  touchZones.addEventListener('touchstart', (e) => {
+    const rect = touchZones.getBoundingClientRect();
+    for(const t of e.changedTouches){
+      const side = (t.clientX - rect.left) < rect.width/2 ? 'left' : 'right';
+      if(side === 'left') keys.left = true; else keys.right = true;
+    }
+  }, { passive:false });
+  touchZones.addEventListener('touchend', (e) => {
+    // stop movement when touch ends
+    keys.left = false; keys.right = false;
+  }, { passive:false });
+
+  // game control
+  restartBtn.addEventListener('click', startGame);
+
+  // start / end
+  function startGame(){
+    // reset state
+    fruits = []; particles = [];
+    score = 0; misses = 0;
+    running = true;
+    lastTime = performance.now();
+    spawnTimer = 0;
+    nextSpawn = randRange(SPAWN_MIN, SPAWN_MAX);
+    basket.xFrac = 0.5;
+    updateHUD();
+    overlay.style.display = 'none';
+    requestAnimationFrame(loop);
+  }
+
+  function endGame(){
+    running = false;
+    overlay.style.display = 'flex';
+    goSummary.textContent = `You scored ${score} point${score===1?'':'s'}.`;
+    // best score
+    if(score > best){
+      best = score;
+      localStorage.setItem('catch_fruits_best', String(best));
+      bestEl.textContent = best;
+    }
+  }
+
+  function updateHUD(){
+    scoreEl.textContent = score;
+    missesEl.textContent = misses;
+  }
+
+  // main loop
+  function loop(now){
+    resizeCanvas();
+    if(!lastTime) lastTime = now;
+    let dt = (now - lastTime) / 1000; // seconds
+    if(dt > 0.05) dt = 0.05; // clamp large frame gaps
+    lastTime = now;
+
+    if(running) {
+      // spawn
+      spawnTimer += dt * 1000;
+      if(spawnTimer >= nextSpawn){
+        spawnTimer = 0;
+        nextSpawn = randRange(SPAWN_MIN, SPAWN_MAX) * (0.98); // small variation
+        spawnFruit();
+      }
+      // slowly scale difficulty: reduce spawn delay a bit (bounded)
+      nextSpawn = Math.max(260, nextSpawn * Math.pow(DIFFICULTY_INCREASE_RATE, dt*60));
+
+      // basket movement from keys
+      const moveSpeedFrac = 0.7 * dt; // fraction per second approx
+      if(keys.left) basket.xFrac -= moveSpeedFrac;
+      if(keys.right) basket.xFrac += moveSpeedFrac;
+      basket.xFrac = clamp(basket.xFrac, 0, 1);
+
+      // update fruits
+      const canvasW = canvas.clientWidth;
+      const canvasH = canvas.clientHeight;
+      const basketPxX = basket.xFrac * canvasW;
+      const basketPxWidth = canvasW * basket.widthFrac;
+      const basketY = canvasH - BASKET_Y_OFFSET;
+
+      for(let i = fruits.length - 1; i >= 0; i--){
+        const f = fruits[i];
+        f.y += f.vy * dt;
+        f.rot += f.rotSpeed * dt;
+
+        const fx = f.xFrac * canvasW;
+        // catch test: when fruit reaches basket's vertical zone
+        const distY = Math.abs(f.y - basketY);
+        const distX = Math.abs(fx - basketPxX);
+        const catchTolerance = Math.max(28, f.size * 0.6);
+        if(distY < 36 && distX < (basketPxWidth/2 + catchTolerance)){
+          // caught
+          score += 1;
+          updateHUD();
+          // fun particles and sound color
+          spawnParticles(fx, f.y, '#ff8a65', 16);
+          fruits.splice(i,1);
+          continue;
+        }
+
+        // missed
+        if(f.y - f.size > canvasH + 40){
+          fruits.splice(i,1);
+          misses += 1;
+          updateHUD();
+          spawnParticles(fx, canvasH - 36, '#b0bec5', 8);
+          if(misses >= MAX_MISSES){ endGame(); }
+        }
+      }
+
+      // update particles
+      for(let i = particles.length - 1; i >= 0; i--){
+        const p = particles[i];
+        p.vy += 500 * dt; // gravity
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+        if(p.life <= 0) particles.splice(i,1);
+      }
+    }
+
+    render();
+    if(running) requestAnimationFrame(loop);
+  }
+
+  // render everything to canvas
+  function render(){
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    ctx.clearRect(0,0,w,h);
+
+    // background sky + decorative sun
+    const g = ctx.createLinearGradient(0,0,0,h);
+    g.addColorStop(0, '#e6f7ff');
+    g.addColorStop(1, '#fff9f6');
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,w,h);
+
+    // soft sun
+    const sunX = w * 0.88;
+    const sunY = h * 0.12;
+    const sunRad = Math.min(w,h) * 0.12;
+    const sunGrad = ctx.createRadialGradient(sunX, sunY, sunRad*0.1, sunX, sunY, sunRad);
+    sunGrad.addColorStop(0, 'rgba(255,200,80,0.95)');
+    sunGrad.addColorStop(1, 'rgba(255,200,80,0.05)');
+    ctx.fillStyle = sunGrad;
+    ctx.beginPath(); ctx.arc(sunX, sunY, sunRad, 0, Math.PI*2); ctx.fill();
+
+    // draw fruits
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for(const f of fruits){
+      const fx = f.xFrac * w;
+      ctx.save();
+      ctx.translate(fx, f.y);
+      ctx.rotate(f.rot);
+      // draw a faint shadow under fruit
+      ctx.beginPath();
+      ctx.ellipse(0, f.size*0.52, f.size*0.58, f.size*0.38, 0, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(0,0,0,0.06)';
+      ctx.fill();
+      // draw emoji
+      ctx.font = `${Math.max(20, f.size)}px serif`;
+      ctx.fillText(f.emoji, 0, 0);
+      ctx.restore();
+    }
+
+    // draw basket (stylized)
+    const basketPxWidth = Math.max(80, w * basket.widthFrac);
+    const basketPxHeight = BASKET_HEIGHT_PX;
+    const basketCx = basket.xFrac * w;
+    const basketY = h - BASKET_Y_OFFSET;
+
+    // shadow
+    ctx.beginPath();
+    ctx.ellipse(basketCx, basketY + basketPxHeight*0.8, basketPxWidth*0.64, basketPxHeight*0.48, 0, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(0,0,0,0.10)';
+    ctx.fill();
+
+    // basket body
+    const grd = ctx.createLinearGradient(basketCx - basketPxWidth/2, basketY - basketPxHeight/2, basketCx + basketPxWidth/2, basketY + basketPxHeight/2);
+    grd.addColorStop(0, '#8d5524');
+    grd.addColorStop(1, '#c07a3b');
+    ctx.fillStyle = grd;
+    roundRect(ctx, basketCx - basketPxWidth/2, basketY - basketPxHeight/2, basketPxWidth, basketPxHeight, basketPxHeight*0.35);
+    ctx.fill();
+
+    // rim
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0,0,0,0.14)';
+    ctx.stroke();
+
+    // mini fruits in basket (visual)
+    const miniY = basketY - basketPxHeight*0.18;
+    const miniSize = Math.min(18, Math.floor(basketPxHeight*0.6));
+    const miniXs = [-miniSize*1.1, 0, miniSize*1.1];
+    ctx.font = `${miniSize}px serif`;
+    for(let i=0;i<3;i++){
+      ctx.fillText(['🍎','🍌','🍊'][i], basketCx + miniXs[i], miniY);
+    }
+
+    // draw particles
+    for(const p of particles){
+      const alpha = Math.max(0, p.life);
+      ctx.beginPath();
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = clamp(alpha, 0, 1);
+      ctx.ellipse(p.x, p.y, p.r, p.r, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // subtle ground line
+    ctx.fillStyle = 'rgba(10,20,40,0.03)';
+    ctx.fillRect(0, h - 8, w, 8);
+  }
+
+  // helper to draw rounded rect path
+  function roundRect(ctx, x, y, w, h, r){
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  // initial resize + start
+  const ro = new ResizeObserver(() => {
+    resizeCanvas();
+    render();
+  });
+  ro.observe(root);
+
+  // Start game automatically
+  resizeCanvas();
+  startGame();
+
+  // Expose debug in console
+  window.CatchFruits = { start: startGame, end: endGame, getState: () => ({score, misses, fruits: fruits.length}) };
+
+})();
+</script>
+</body>
+</html>
